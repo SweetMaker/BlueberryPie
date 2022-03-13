@@ -1,0 +1,17 @@
+# Ignore everything
+*
+
+# But do include these files
+!README.md
+!LICENSE
+!.gitignore
+!.c
+!.cpp
+!.h
+!.txt
+!Examples
+!Examples/MapCap
+!Examples/MapCap/*.ino
+!Examples/MapCap/*.h
+!Examples/MapCap/*.cpp
+!Examples/MapCap/*.c

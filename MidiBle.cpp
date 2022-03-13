@@ -14,8 +14,8 @@ float blePairTimeOut = 0;
 class MySecurity : public BLESecurityCallbacks {
 
 	bool onConfirmPIN(uint32_t pin) {
-		Serial.println("onConfirmPIN");
-		if (blePairTimeOut > 0) {
+    Serial.print("onConfirmPIN"); Serial.print(" "); Serial.println(blePairTimeOut);
+    if (blePairTimeOut >= 0) {
 			return true;
 		}
 		else {
@@ -41,7 +41,6 @@ class MySecurity : public BLESecurityCallbacks {
 	}
 
 	void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
-		Serial.println("onAuthenticationComplete");
 		ESP_LOGI(LOG_TAG, "Starting BLE work!");
 		if (cmpl.success) {
 			Serial.println("onAuthenticationComplete -> success");
@@ -50,7 +49,9 @@ class MySecurity : public BLESecurityCallbacks {
 			ESP_LOGD(LOG_TAG, "size: %d", length);
 		}
 		else {
-			Serial.println("onAuthenticationComplete -> fail");
+      Serial.println(cmpl.auth_mode);
+      Serial.println(cmpl.fail_reason);
+      Serial.println("onAuthenticationComplete -> fail");
 		}
 	}
 };
@@ -96,7 +97,8 @@ int MidiBle::setup()
 	pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND); //ESP_LE_AUTH_REQ_SC_ONLY
 	pSecurity->setCapability(ESP_IO_CAP_KBDISP);
 	pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-	Serial.println("Characteristic defined! Now you can read it in your phone!");
+
+  Serial.println("Characteristic defined! Now you can read it in your phone!");
 
 
 	BLEDevice::startAdvertising();
