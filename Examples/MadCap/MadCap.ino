@@ -1,8 +1,11 @@
+/*
+ * LOLIN D32 PRO
+ */
+
 #include <dummy.h>
 #include <MotionSensor.h>
 #include <Wire.h>
 #include <BLEDevice.h>
-#include <EEPROM.h>
 #include <SweetMaker.h>
 #include <StrawberryString.h>
 #include "BlueberryPie.h"
