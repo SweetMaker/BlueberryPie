@@ -10,8 +10,8 @@
 !.h
 !.txt
 !Examples
-!Examples/MapCap
-!Examples/MapCap/*.ino
-!Examples/MapCap/*.h
-!Examples/MapCap/*.cpp
-!Examples/MapCap/*.c
+!Examples/*
+!Examples/*/*.ino
+!Examples/*/*.h
+!Examples/*/*.cpp
+!Examples/*/*.c

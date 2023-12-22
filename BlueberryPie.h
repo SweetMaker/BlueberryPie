@@ -29,9 +29,8 @@ Release     Date                        Change Description
 #ifndef __BLUEBERRY_PIE_H__
 #define __BLUEBERRY_PIE_H__
 
-#include <StrawberryString.h>
 #include "MidiBle.h"
-//#include "BleMidi.h"
+#include <StrawberryString.h>
 
 namespace SweetMaker
 {
@@ -50,7 +49,7 @@ namespace SweetMaker
 		*/
 	public:
 		/*
-		* Use this to create and setup StrawberryString once at startup
+		* Use this to create and setup BlueberryPie once at startup
 		*/
 		BlueberryPie();
 		int init();
@@ -63,7 +62,6 @@ namespace SweetMaker
 		/*
 		* These class methods are only for use by FizzyMint itself
 		*/
-//		BleMidi bleMidi;
 	};
 }
 
