@@ -11,29 +11,16 @@ BlueberryPie::BlueberryPie()
 int BlueberryPie::init()
 {
 	int retVal;
+	Serial.println("BlueberryPie::init");
 	retVal = StrawberryString::init();
 	if (retVal != 0) {
 		return(-1);
 	}
 
-//	bleMidi.configDeviceName("MadCap");
- //   retVal = ble_setup();
-	if (retVal != 0)
-	{
-		Serial.println("ble_setup failed");
-		return(-2);
-	}
-
 	retVal = midiBle.setup();
 	if (retVal != 0) {
-		Serial.println("bleMidi setup failed");
+		Serial.println("midiBle setup failed");
 		return(-3);
-	}
-
-//	retVal = bleMidi.start_adv();
-	if (retVal != 0) {
-		Serial.println("ble start_adv failed");
-		return(-4);
 	}
 
 	Serial.println("Blueberry init complete");

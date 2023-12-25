@@ -1,11 +1,11 @@
 #ifndef __MIDI_BLE_H__
 #define __MIDI_BLE_H__
 
-#include <stdint.h>
-
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+
+#include "IEventHandler.h"
 
 namespace SweetMaker 
 {
