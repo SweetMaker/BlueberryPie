@@ -10,6 +10,7 @@ using namespace SweetMaker;
 
 BlueberryPie myPie;
 ToDiscrete * myToDiscrete;
+int16_t tilt_y;
 
 void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo);
 
@@ -20,13 +21,14 @@ void setup()
 	Serial.println("Welcome to Keys");
 
 	myPie.configEventHandlerCallback(myEventHandler);
+	myToDiscrete = new ToDiscrete(1000, 100);
+
 	retVal = myPie.init();
 	if (retVal != 0)
 	{
 		Serial.println("myPie init failure");
 	}
 
-	myToDiscrete = new ToDiscrete(100, 10);
 	Serial.println("Leaving setup");
 }
 
@@ -47,31 +49,13 @@ void handleSerialInput()
 		switch (c)
 		{
 
-		case 'e':
-		{
-			if (!EEPROM.begin(0x400))
-			{
-				Serial.println("begin error");
-			}
-			uint8_t readU8 = EEPROM.readByte(0);
-			Serial.print("I read: ");
-			Serial.println(readU8);
-			Serial.println("Writing '3'");
-			EEPROM.writeByte(0, 3);
-			if (!EEPROM.commit())
-				Serial.println("Commit error");
-			readU8 = EEPROM.readByte(0);
-			Serial.print("I read: ");
-			Serial.println(readU8);
-		}
-		break;
-
 		case 'z':
 		{
 			Serial.println("Clear offset");
 			myPie.motionSensor.clearOffsetRotation();
 		}
 		break;
+
 		case 'c':
 		{
 			Serial.println("Starting to calibrate");
@@ -128,6 +112,7 @@ void handleSerialInput()
 		}
 		break;
 		}
+	
 	}
 }
 
@@ -163,9 +148,7 @@ void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo)
 	case MotionSensor::MOTION_SENSOR_READY:
 	{
 		Serial.println("MotionSensor Ready");
-//		int16_t tilt_x = myPie.motionSensor.rotQuat.getRotX();
 		myToDiscrete->start(0);
-//		Serial.println(myToDiscrete->current_discrete_value);
 	}
 	break;
 
@@ -175,10 +158,27 @@ void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo)
 
 	case MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY:
 	{
-		Serial.println("MOTION_SENSOR_NEW_SMPL_RDY");
-
+		//Serial.println("MOTION_SENSOR_NEW_SMPL_RDY");
 		int16_t tilt_x = myPie.motionSensor.rotQuat.getRotX();
-		myToDiscrete->writeValue((uint32_t)tilt_x);
+		tilt_y = myPie.motionSensor.rotQuat.getRotY();
+		myToDiscrete->writeValue((int32_t)tilt_x);
+		if (tilt_y > 0) {
+			uint8_t volume = 128 - (tilt_y >> 7);
+			myPie.midiBle.setMidiMsg(0b10110000, 7, volume);
+		}
+
+		Quaternion_16384 vertical = Quaternion_16384(0, 0, 0, 16384);
+		int16_t howVertical = myPie.motionSensor.gravity.dotProduct(&vertical);
+		
+		static boolean isVertical = false;
+		if (howVertical > 15000 && !isVertical) {
+			isVertical = true;
+			myPie.ledStrip[0].setColour(128, 128, 128);
+		}
+		else if (howVertical < 14500 && isVertical) {
+			isVertical = false;
+			myPie.ledStrip[0].setColour(0, 0, 0);
+		}
 	}
 	break;
 
@@ -191,9 +191,22 @@ void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo)
 		break;
 
 	case ToDiscrete::NEW_VALUE:
+	{
+		int16_t value = myToDiscrete->current_discrete_value;
 		Serial.print("To Discrete: New Value:");
-		Serial.println(myToDiscrete->current_discrete_value);
-		break;
+		Serial.println(value);
+
+		// C, D, E?, F, G, A?, and B?
+		uint8_t static const c_minor[] = { 60,62,63,65,67,68 };
+		if ((value >= 0) && (value < 6)) {
+			static uint8_t lastNote = 60;
+			uint8_t midiNote = c_minor[value];
+			myPie.midiBle.setMidiMsg(0b10000000, lastNote, 64);
+			myPie.midiBle.setMidiMsg(0b10010000, midiNote, 64);
+			lastNote = midiNote;
+		}
+	}
+	break;
 
 	default:
 		Serial.print("Event: ");
