@@ -18,15 +18,17 @@ uint8_t static const hue[] = { 0,40,80,120,160,200,240 };
 
 
 BlueberryPie myPie;
+
 ToDiscrete zAxisRotationQuantizer(3000, 500); // Used for note selection
 ToDiscrete verticalTiltQuantizer(1000, 200);  // Used for controlling playing notes
+int16_t zAxisAboutVertical_16384;
+int16_t verticalVelocity;
 
 SigGen mySigGen;
 SigGen sineWave(sineWave255, NUM_SAM(sineWave255), 200, 0);;
 StaticGen myStaticGen;
 static const SigGen::SAMPLE PROGMEM flashLowWave[] = { 127, 0, 0, 0, 0, 127 };
 static const SigGen::SAMPLE PROGMEM flashHighWave[] = { 127, 200, 200, 200, 200, 127 };
-int16_t verticalVelocity;
 
 ColourHSV lightStripHSV[NUM_LIGHTS];
 
@@ -106,6 +108,14 @@ void handleMotionSensorNewSmplRdy(uint16_t eventId, uint8_t srcRef, uint16_t eve
 	int16_t angleToVertical_16384 = (int16_t)(acos(cos_angleToVertical) * 0x8000 / M_PI);
 	verticalTiltQuantizer.writeValue((int32_t)angleToVertical_16384);
 
+	// Calculate rotation of z axis about vertical - used for modulation 
+	Quaternion_16384 zAxis = Quaternion_16384(0, 0, 0, 16384);
+	myPie.motionSensor.rotQuat.rotate(&zAxis);
+	x = zAxis.x;
+	y = zAxis.y;
+	sin_orientation = x / sqrt(x * x + y * y);
+	zAxisAboutVertical_16384 = (int16_t)(asin(sin_orientation) * 0x8000 / M_PI);
+	
 	// Calculate rotational velocity - WRT vertical
 	static int16_t previousAngleToVertical = 0;
 	verticalVelocity = angleToVertical_16384 - previousAngleToVertical;
@@ -122,24 +132,26 @@ void handleMotionSensorNewSmplRdy(uint16_t eventId, uint8_t srcRef, uint16_t eve
  * bellsStateMachine - Controls behaviour of Bells
  */
 typedef enum {
-	DAMPING = 0,
-	NOTE_SELECTION = 1,
-	COLOUR_LOCKIN = 2,
-	PRE_STRIKE = 3,
-	POST_STRIKE = 4,
+	MUTE = 0,
+	DAMPING = 1,
+	NOTE_SELECTION = 2,
+	COLOUR_LOCKIN = 3,
+	PRE_STRIKE = 4,
+	POST_STRIKE = 5,
 }BELLS_STATE;
 
 typedef enum {
-	DAMP_ZONE = 0, // Used for damping a played note
-	NOTE_SELECTION_ZONE = 1, // Used for selecting the next note
-	COLOUR_LOCKIN_ZONE = 2, // Not currently used
-	STRIKE_ZONE = 3, // Used for controlling the playing of notes
+	MUTE_ZONE = 0, // Used for muting a played note
+	DAMP_ZONE = 1, // Used for damping a played note
+	NOTE_SELECTION_ZONE = 2, // Used for selecting the next note
+	COLOUR_LOCKIN_ZONE = 3, // Not currently used
+	STRIKE_ZONE = 4, // Used for controlling the playing of notes
 }BELLS_ZONE;
 
 /* This maps the quantized tilt to 'zones' used by Bells */
 uint8_t convertTiltToZone(int16_t tilt) {
 	static int16_t zoneMap[] = { 
-		DAMP_ZONE ,
+		MUTE_ZONE ,
 		DAMP_ZONE ,
 		NOTE_SELECTION_ZONE,
 		NOTE_SELECTION_ZONE,
@@ -166,11 +178,11 @@ void BELLS_handle_event() {
 	* This is the state information we use
 	*/
 	static BELLS_STATE state;
-	static boolean isMute = false;
 	static uint8_t currentNote = 0;
 	static uint8_t nextNote = 0;
 	static int16_t lastOrientation = 0;
 	static int16_t maxVerticalVelocity = 0;
+	static int16_t modulationNullPosition = 0;
 
 	int16_t tilt = verticalTiltQuantizer.current_discrete_value;
 	uint8_t zone = convertTiltToZone(tilt);
@@ -186,7 +198,7 @@ void BELLS_handle_event() {
 			maxVerticalVelocity = 0;
 			break;
 		}
-		if (zone == DAMP_ZONE) {
+		if ((zone == DAMP_ZONE) || (zone == MUTE_ZONE)) {
 			Serial.println("Has started damping");
 			state = DAMPING;
 			break;
@@ -210,7 +222,6 @@ void BELLS_handle_event() {
 
 		if (verticalVelocity < -20) {
 			Serial.println("Has struck:");
-			isMute = false;
 			uint8_t velocity = (uint8_t)((uint16_t)maxVerticalVelocity >> 3);
 			if (velocity > 127) velocity = 127;
 			myPie.midiBle.setMidiMsg(0b10000000, currentNote, 64);
@@ -218,32 +229,58 @@ void BELLS_handle_event() {
 			currentNote = nextNote;
 			mySigGen.configSamples(flashLowWave, NUM_SAM(flashLowWave), 200, SigGen::DONT_FINISH_ON_ZERO);
 			mySigGen.start(1);
+			modulationNullPosition = zAxisAboutVertical_16384;
 			state = POST_STRIKE;
 		}
 	}
 	break;
-
+				    
 	case POST_STRIKE: {
-		if (zone != STRIKE_ZONE) {
+		if (zone == NOTE_SELECTION_ZONE) {
 			Serial.println("Has started note selection");
 			sineWave.start();
 			state = NOTE_SELECTION;
-		}
-	}
-	break;
-
-	case DAMPING: {
-		if (zone != DAMP_ZONE) {
-			Serial.println("Has started note selection");
-			state = NOTE_SELECTION;
 			break;
 		}
-
-		if (!isMute) {
-			isMute = true;
-			myPie.midiBle.setMidiMsg(0b10000000, currentNote, 64);
+		// Modulate note
+		int16_t rawModulation = abs(zAxisAboutVertical_16384 - modulationNullPosition);
+		Serial.print(zAxisAboutVertical_16384); Serial.print(" ");
+		Serial.print(modulationNullPosition); Serial.print(" ");
+		Serial.print(rawModulation); Serial.println(" ");
+		if ((rawModulation > 3000) && (rawModulation < 3000 + 2048)) {
+			uint8_t modulation = (uint8_t)(((uint16_t)(rawModulation - 3000)) >> 4);
+			myPie.midiBle.setMidiMsg(0b11100000, 1, modulation);
+		}
+		if (rawModulation < 1000) {
+			myPie.midiBle.setMidiMsg(0b11100000, 1, 64);
 		}
 	}
+    break;
+
+	case DAMPING: {
+		if (zone == DAMP_ZONE) {
+			Serial.println(verticalTiltQuantizer.in_step_value);
+			// need to dampen note
+		}
+		else if (zone == MUTE_ZONE) {
+			Serial.println("Has muted");
+			myPie.midiBle.setMidiMsg(0b10000000, currentNote, 64);
+			state = MUTE;
+		}
+		else {
+			Serial.println("Has started note selection");
+			state = NOTE_SELECTION;
+		}
+	}
+    break;
+
+	case MUTE: {
+		if (zone != MUTE) {
+			Serial.println("Has stopped muting");
+			state = DAMPING;
+		}
+	}
+    break;
 	}
 }
 
