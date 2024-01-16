@@ -1,11 +1,12 @@
 #ifndef __MIDI_BLE_H__
 #define __MIDI_BLE_H__
-
+#include <stdint.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
 
 #include "IEventHandler.h"
+#include "midiNotes.h"
 
 namespace SweetMaker 
 {
@@ -14,9 +15,18 @@ namespace SweetMaker
 		MidiBle();
 
 		int setup(void);
+		void noteOn(uint8_t channel, uint8_t note, uint8_t velocity);
+		void noteOn(uint8_t channel, uint8_t note);
+		void noteOff(uint8_t channel, uint8_t note, uint8_t velocity);
+		void noteOff(uint8_t channel, uint8_t note);
 		void setMidiMsg(uint8_t status);
 		void setMidiMsg(uint8_t status, uint8_t data1);
 		void setMidiMsg(uint8_t status, uint8_t data1, uint8_t data2);
+		void pitchBendChange(uint8_t channel, uint16_t bendder);
+		void polyphonicPressure(uint8_t channel, uint8_t note, uint8_t pressure);
+		void modulate(uint8_t channel, uint16_t value);
+		void damperPedalOn(uint8_t channel);
+		void damperPedalOff(uint8_t channel);
 
 		enum {
 			BME_CONNECT = IEventHandler::BLE_MIDI_EVENTS,

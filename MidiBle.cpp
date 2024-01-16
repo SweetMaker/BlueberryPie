@@ -56,6 +56,16 @@ class MySecurity : public BLESecurityCallbacks {
 	}
 };
 
+#define MIDI_VELOCITY_DEFAULT		(60)
+
+#define MIDI_NOTE_OFF				(0x80)
+#define MIDI_NOTE_ON				(0x90)
+#define MIDI_POLYPHONIC_PRESSURE	(0xA0)
+#define MIDI_CHAN_CONTROL			(0xb0)
+#define MIDI_PITCH_BEND				(0xE0)
+
+#define MIDI_CC_MODULATION          (1)
+#define MIDI_CC_DAMPER_PEDAL        (64)
 
 MidiBle::MidiBle()
 {
@@ -98,12 +108,51 @@ int MidiBle::setup()
 	pSecurity->setCapability(ESP_IO_CAP_KBDISP);
 	pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
 
-  Serial.println("Characteristic defined! Now you can read it in your phone!");
-
-
+    Serial.println("MidiBle: Starting to advertise");
 	BLEDevice::startAdvertising();
 	return(0);
 }
+
+
+void MidiBle::noteOn(uint8_t channel, uint8_t note, uint8_t velocity){
+	setMidiMsg(MIDI_NOTE_ON | (channel-1), note, velocity);
+}
+
+void MidiBle::noteOn(uint8_t channel, uint8_t note){
+	noteOn(channel, note, MIDI_VELOCITY_DEFAULT);
+}
+
+void MidiBle::noteOff(uint8_t channel, uint8_t note, uint8_t velocity){
+	setMidiMsg(MIDI_NOTE_OFF | (channel-1), note, velocity);
+}
+
+void MidiBle::noteOff(uint8_t channel, uint8_t note){
+	noteOff(channel, note, MIDI_VELOCITY_DEFAULT);
+}
+
+void MidiBle::pitchBendChange(uint8_t channel, uint16_t bender_16384) {
+	setMidiMsg(MIDI_PITCH_BEND | (channel-1), (uint8_t)bender_16384 | 0x3f, (uint8_t)(bender_16384 >> 7));
+}
+
+void MidiBle::polyphonicPressure(uint8_t channel, uint8_t note, uint8_t pressure) {
+	setMidiMsg(MIDI_POLYPHONIC_PRESSURE | (channel - 1), note, pressure);
+}
+
+void MidiBle::modulate(uint8_t channel, uint16_t value_16384) {
+	setMidiMsg(MIDI_CHAN_CONTROL | (channel - 1), MIDI_CC_MODULATION, value_16384 >>7);
+}
+
+
+void MidiBle::damperPedalOn(uint8_t channel) {
+	setMidiMsg(MIDI_CHAN_CONTROL | (channel-1), MIDI_CC_DAMPER_PEDAL, 127);
+}
+
+void MidiBle::damperPedalOff(uint8_t channel) {
+	setMidiMsg(MIDI_CHAN_CONTROL | (channel-1), MIDI_CC_DAMPER_PEDAL, 0);
+}
+
+
+
 
 void MidiBle::setMidiMsg(uint8_t status)
 {
