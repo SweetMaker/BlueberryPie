@@ -130,6 +130,9 @@ void MidiBle::noteOff(uint8_t channel, uint8_t note){
 	noteOff(channel, note, MIDI_VELOCITY_DEFAULT);
 }
 
+/*
+ * Null value is 8196 or 0x1fff
+ */
 void MidiBle::pitchBendChange(uint8_t channel, uint16_t bender_16384) {
 	setMidiMsg(MIDI_PITCH_BEND | (channel-1), (uint8_t)bender_16384 | 0x3f, (uint8_t)(bender_16384 >> 7));
 }

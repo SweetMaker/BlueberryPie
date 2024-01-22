@@ -17,6 +17,8 @@ int BlueberryPie::init()
 		return(-1);
 	}
 
+	Serial.println("About to setup midiBle");
+
 	retVal = midiBle.setup();
 	if (retVal != 0) {
 		Serial.println("midiBle setup failed");
