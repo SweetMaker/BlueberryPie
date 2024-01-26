@@ -291,6 +291,10 @@ void MALLET_handle_event_orientation_update() {
 			Serial.print("Has struck: ");
 			uint8_t velocity = (uint8_t)((uint16_t)maxVerticalVelocity >> 3);
 			Serial.println(velocity);
+
+			int16_t pos = verticalTiltQuantizer.current_continuous_value - 14336;
+			velocity = (uint8_t)(((uint16_t)pos) >> 6);
+			Serial.println(velocity);
 			if (velocity > 127) velocity = 127;
 
 			myPie.midiBle.noteOff(MIDI_CHAN_NUM, currentNote);
