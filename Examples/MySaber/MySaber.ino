@@ -12,8 +12,9 @@ using namespace SweetMaker;
 BlueberryPie myPie;
 
 #define NUM_LIGHTS (StrawberryString::num_lights)
-static const SigGen::SAMPLE PROGMEM sawTooth[] = { 0, 256 * NUM_LIGHTS };
-
+static const SigGen::SAMPLE PROGMEM sawTooth[] = { 0, 256 * NUM_LIGHTS -1 };
+static const SigGen::SAMPLE PROGMEM startUpVolume[] = { 4096, 16383, 16383, 16383, 12288, 8192, 4096 };
+static const SigGen::SAMPLE PROGMEM startUpModScale[] = { 0x1fff, 0x2fff, 0x2fff, 0x2fff, 0x2fff, 0x2e00, 0x2c000 };
 
 class MiniSaberLightControl {
 private:
@@ -65,12 +66,18 @@ private:
 	}state = OFF;
 
 	MiniSaberLightControl lightControls[NUM_LIGHTS];
-    SigGen lightUpSigGen;
+	SigGen lightUpSigGen;
+	SigGen lightUpVolSigGen;
+	SigGen lightUpModWave;
+
 	const uint8_t midiChanNum = 1;
+	const uint32_t startUpTime_ms = 2000;
 
 public: 
 	MiniSaber(BlueberryPie *blueberryPie) {
-		lightUpSigGen.configSamples(sawTooth, NUM_SAM(sawTooth), 1500, SigGen::DONT_FINISH_ON_ZERO);
+		lightUpSigGen.configSamples(sawTooth, NUM_SAM(sawTooth), startUpTime_ms, SigGen::DONT_FINISH_ON_ZERO);
+		lightUpVolSigGen.configSamples(startUpVolume, NUM_SAM(startUpVolume), startUpTime_ms, SigGen::DONT_FINISH_ON_ZERO);
+		lightUpModWave.configSamples(startUpModScale, NUM_SAM(startUpModScale), startUpTime_ms, 0);
 
 		for (uint8_t i = 0; i < NUM_LIGHTS; i++) {
 			lightControls[i].configOutput(&blueberryPie->ledStrip[i]);
@@ -80,6 +87,11 @@ public:
 	void update() {
 		if (state == TURNING_ON) {
 			if (lightUpSigGen.isRunning()) {
+
+				int32_t pitchChange = lightUpModWave.readValue();
+				myPie.midiBle.pitchBendChange(midiChanNum, pitchChange);
+				myPie.midiBle.setFootControl(midiChanNum, lightUpVolSigGen.readValue());
+
 				int16_t currentVal = lightUpSigGen.readValue();
 				for (uint8_t i = 0; i < NUM_LIGHTS; i++) {
 					if (currentVal > 256) {
@@ -93,14 +105,14 @@ public:
 				}
 			}
 			else {
-				lightControls[NUM_LIGHTS - 1].setBrightness(0);
-				myPie.midiBle.noteOff(midiChanNum, MIDI_A3);
-				myPie.midiBle.noteOn(midiChanNum, MIDI_A2);
+				lightControls[NUM_LIGHTS - 1].setBrightness(255);
+				myPie.midiBle.pitchBendChange(midiChanNum, 0x1fff);
 				state = ON;
 			}
 		}
 		else if (state == TURNING_OFF) {
 			if (lightUpSigGen.isRunning()) {
+				myPie.midiBle.setFootControl(midiChanNum, lightUpVolSigGen.readValue());
 				int16_t currentVal = 256* NUM_LIGHTS - lightUpSigGen.readValue();
 				for (uint8_t i = 0; i < NUM_LIGHTS; i++) {
 					if (currentVal > 256) {
@@ -115,8 +127,8 @@ public:
 			}
 			else {
 				lightControls[0].setBrightness(0);
+				myPie.midiBle.noteOff(midiChanNum, MIDI_A2);
 				state = OFF;
-				myPie.midiBle.noteOff(midiChanNum, MIDI_A3);
 			}
 		}
 
@@ -125,17 +137,32 @@ public:
 		}
 	}
 
+	void refreshMidi() {
+		myPie.midiBle.setFootControl(midiChanNum, 4096);
+		switch (state) {
+		case ON:
+			myPie.midiBle.noteOn(midiChanNum, MIDI_A2);
+			break;
+
+		case OFF:
+		default:
+			myPie.midiBle.noteOff(midiChanNum, MIDI_A2);
+			break;
+		}
+	}
+
 	void turnOn() {
 		state = TURNING_ON;
 		lightUpSigGen.start(1);
-		myPie.midiBle.noteOn(midiChanNum, MIDI_A3);
+		lightUpModWave.start(1);
+		lightUpVolSigGen.start(1);
+		myPie.midiBle.noteOn(midiChanNum, MIDI_A2);
 	}
 
 	void turnOff() {
 		state = TURNING_OFF;
 		lightUpSigGen.start(1);
-		myPie.midiBle.noteOff(midiChanNum, MIDI_A2);
-		myPie.midiBle.noteOn(midiChanNum, MIDI_A3);
+		lightUpVolSigGen.start(1);
 	}
 
 	void setColour(uint8_t colour) {
@@ -144,9 +171,24 @@ public:
 		}
 	}
 
-	void setRotVel(int16_t rotVel) {
-		if (state != OFF) {
-			myPie.midiBle.pitchBendChange(midiChanNum, 0x1fff + rotVel);
+	void setRotVel(int16_t rotVel_16384) {
+		switch (state) {
+		case ON : {
+			uint16_t pitchChange = 0x1fff + (rotVel_16384 << 2);
+			pitchChange = pitchChange > 0x2fff ? 0x2fff : pitchChange;
+			myPie.midiBle.pitchBendChange(midiChanNum, pitchChange);
+			uint16_t volDelta = rotVel_16384 > 768 ? 12288 : (rotVel_16384 <<4);
+			myPie.midiBle.setFootControl(midiChanNum, 4095 + volDelta);
+			}
+            break;
+
+		case TURNING_ON:
+		case TURNING_OFF:
+			break;
+
+		case OFF:
+		default:
+			break;
 		}
 	}
 
@@ -205,7 +247,7 @@ void loop()
 {
 	// This function drives updates for LEDs and everything in the Sweetmaker framework 
 	myPie.update();
-	myMiniSaber.update();
+//	myMiniSaber.update();
 
 	// Check for any input on the Serial Port (only relevant when connected to computer)
 	handleSerialInput();
@@ -234,6 +276,7 @@ void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo)
 
 	case MidiBle::BME_CONNECT:
 		Serial.println("BLE Connected");
+		myMiniSaber.refreshMidi();
 		break;
 
 	case MidiBle::BME_DISCONNECT:
@@ -278,16 +321,17 @@ void handleMotionSensorReading(uint16_t eventId, uint8_t srcRef, uint16_t eventI
 
 		/* Calculate crude rotational velocity */
 		orientation.angularVelocity_16384 = 16383 - myPie.motionSensor.rotQuatDelta.r;
-		orientation.angularVelocity_16384 *= 200;
+		orientation.angularVelocity_16384 = orientation.angularVelocity_16384 > 256?
+			 16383 : orientation.angularVelocity_16384 <<= 6;
 
 		/* Detect specific orientations of note */
-		if (orientation.angleToVertical_16384 < 1500)
+		if (orientation.angleToVertical_16384 < 2500)
 			orientation.orientation = Orientation::VERTICAL_UP;
 		else if (orientation.angleToVertical_16384 < 16384 - 500)
 			orientation.orientation = Orientation::NON_SPECIFIC;
 		else if (orientation.angleToVertical_16384 < 16384 + 500)
 			orientation.orientation = Orientation::HORIZONTAL;
-		else if (orientation.angleToVertical_16384 < 32768 - 2500)
+		else if (orientation.angleToVertical_16384 < 32768 - 3500)
 			orientation.orientation = Orientation::NON_SPECIFIC;
 		else
 			orientation.orientation = Orientation::VERTICAL_DOWN;
@@ -309,26 +353,44 @@ void generateOnAndOffEvents(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo
 		COLOUR_SELECTION,
 	}state = OFF;
 
+	/*
+	if (eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) {
+		Serial.print(state); Serial.print(" ");
+		Serial.println(orientation.orientation);
+	}
+	if (eventId == TimerTickMngt::TIMER_EXPIRED) {
+		Serial.println("Timer Expired");
+	}
+	*/
+
 	switch (state) {
 	case OFF: {
 		if ((eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) &&
 			(orientation.orientation == Orientation::VERTICAL_UP)) {
 			state = OFF_VERTICAL_UP;
-			onOffTimer.startTimer(2000, 0);
+			// don't start timer - we do that once we have moved away from Vertical
 		}
 	}
 	break;
+
 	case OFF_VERTICAL_UP: {
-		if ((eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) &&
-			(orientation.orientation == Orientation::VERTICAL_DOWN)) {
-			state = OFF_VERTICAL_DOWN;
-			onOffTimer.startTimer(2000, 0);
+		if (eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY){
+			if ((orientation.orientation != Orientation::VERTICAL_UP) &&
+				!onOffTimer.isRunning()) {
+				// We have moved away from Vertical - start timing
+				onOffTimer.startTimer(2000, 0);
+			}
+			if (orientation.orientation == Orientation::VERTICAL_DOWN){
+			  state = OFF_VERTICAL_DOWN;
+			  onOffTimer.startTimer(2000, 0);
+			}
 		}
 		else if (eventId == TimerTickMngt::TIMER_EXPIRED) {
 			state = OFF;
 		}
 	}
 	break;
+
 	case OFF_VERTICAL_DOWN: {
 		if ((eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) &&
 			(orientation.orientation == Orientation::HORIZONTAL)) {
@@ -341,6 +403,7 @@ void generateOnAndOffEvents(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo
 		}
 	}
     break;
+
 	case ON: {
 		if ((eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) &&
 			(orientation.orientation == Orientation::VERTICAL_UP)) {
@@ -349,6 +412,7 @@ void generateOnAndOffEvents(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo
 		}
 	}
 	break;
+
 	case ON_VERTICAL_UP: {
 		if ((eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) &&
 			(orientation.orientation != Orientation::VERTICAL_UP)) {
@@ -362,6 +426,7 @@ void generateOnAndOffEvents(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo
 		}
 	}
     break;
+
 	case OFF_RETURN_TO_HORIZONTAL: {
 		if ((eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) &&
 			(orientation.orientation != Orientation::VERTICAL_UP)) {
@@ -397,11 +462,6 @@ void generateColourChangeEvents(uint16_t eventId, uint8_t srcRef, uint16_t event
 
 	if (eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) {
 		quantizer.writeValue(orientation.zAxisRotation_16384 + (quant_step_size>>1));
-		Serial.print(state);
-		Serial.print(" ");
-		Serial.print(quantizer.current_continuous_value);
-		Serial.print(" ");
-		Serial.println(quantizer.current_discrete_value);
 	}
 
 	switch (state) {
@@ -458,6 +518,7 @@ void mySaberEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo, S
 		/* This function is the main */
 	case MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY:
 		myMiniSaber.setRotVel(orientation.angularVelocity_16384);
+		myMiniSaber.update();
 		break;
 
 	case SABER_EVENT_TURN_ON:
@@ -486,6 +547,10 @@ void mySaberEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo, S
 		break;
 	}
 
+	case TimerTickMngt::TIMER_TICK_S:
+		myMiniSaber.refreshMidi();
+		break;
+
 	default:
 		break;
 	}
@@ -507,7 +572,15 @@ void handleSerialInput() {
 			myPie.recalibrateMotionSensor();
 			Serial.println("Calibration complete");
 		}
-				break;
+        break;
+		case 'm': {
+			uint8_t status = Serial.parseInt();
+			uint8_t data1 = Serial.parseInt();
+			uint8_t data2 = Serial.parseInt();
+			Serial.println("Sending Midi Message");
+			myPie.midiBle.setMidiMsg(status, data1, data2);
+		}
+        break;
 
 		case 'l': {
 			// Configures the motionSensor rotation offset to believe it is level
