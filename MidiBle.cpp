@@ -61,11 +61,15 @@ class MySecurity : public BLESecurityCallbacks {
 #define MIDI_NOTE_OFF				(0x80)
 #define MIDI_NOTE_ON				(0x90)
 #define MIDI_POLYPHONIC_PRESSURE	(0xA0)
-#define MIDI_CHAN_CONTROL			(0xb0)
+#define MIDI_CHAN_CONTROL			(0xB0)
 #define MIDI_PITCH_BEND				(0xE0)
+#define MIDI_SYS_EXCLUSIVE  		(0xF0)
 
-#define MIDI_CC_MODULATION          (1)
-#define MIDI_CC_DAMPER_PEDAL        (64)
+#define MIDI_CC_MODULATION				(1)
+#define MIDI_CC_FOOT_CONTROLLER_COURSE  (4)
+#define MIDI_CC_FOOT_CONTROLLER_FINE    (36)
+#define MIDI_CC_VOLUME					(7)
+#define MIDI_CC_DAMPER_PEDAL			(64)
 
 MidiBle::MidiBle()
 {
@@ -127,9 +131,12 @@ void MidiBle::noteOff(uint8_t channel, uint8_t note, uint8_t velocity){
 }
 
 void MidiBle::noteOff(uint8_t channel, uint8_t note){
-	noteOff(channel, note, MIDI_VELOCITY_DEFAULT);
+	noteOff(channel, note, 0);
 }
 
+/*
+ * Null value is 8196 or 0x1fff
+ */
 void MidiBle::pitchBendChange(uint8_t channel, uint16_t bender_16384) {
 	setMidiMsg(MIDI_PITCH_BEND | (channel-1), (uint8_t)bender_16384 | 0x3f, (uint8_t)(bender_16384 >> 7));
 }
@@ -151,8 +158,14 @@ void MidiBle::damperPedalOff(uint8_t channel) {
 	setMidiMsg(MIDI_CHAN_CONTROL | (channel-1), MIDI_CC_DAMPER_PEDAL, 0);
 }
 
+void MidiBle::setVolume(uint8_t channel, uint8_t volume) {
+	setMidiMsg(MIDI_CHAN_CONTROL | (channel - 1), MIDI_CC_VOLUME, volume);
+}
 
-
+void MidiBle::setFootControl(uint8_t channel, uint16_t level) {
+	setMidiMsg(MIDI_CHAN_CONTROL | (channel - 1), MIDI_CC_FOOT_CONTROLLER_COURSE, level>>7);
+	setMidiMsg(MIDI_CHAN_CONTROL | (channel - 1), MIDI_CC_FOOT_CONTROLLER_FINE, level & 0x7F);
+}
 
 void MidiBle::setMidiMsg(uint8_t status)
 {
