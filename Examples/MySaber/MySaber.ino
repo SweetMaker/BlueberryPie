@@ -573,6 +573,7 @@ void handleSerialInput() {
 			Serial.println("Calibration complete");
 		}
         break;
+
 		case 'm': {
 			uint8_t status = Serial.parseInt();
 			uint8_t data1 = Serial.parseInt();
