@@ -30,8 +30,9 @@ enum SpecificOrientation {
 #define WAHWAH_EVENT_ENTERED_CMD_SLCT_MODE		(IEventHandler::USER + 3)
 #define WAHWAH_EVENT_LEFT_CMD_SLCT_MODE			(IEventHandler::USER + 4)
 #define WAHWAH_EVENT_CMD_SLCT_NEW      			(IEventHandler::USER + 5)
-#define WAHWAH_EVENT_CMD_TOGGLE_MODE_ENTERED	(IEventHandler::USER + 6)
-#define WAHWAH_EVENT_CMD_CONT_MODE_ENTERED			(IEventHandler::USER + 7)
+#define WAHWAH_EVENT_CMD_SLCT_NULL     			(IEventHandler::USER + 6)
+#define WAHWAH_EVENT_CMD_TOGGLE          	    (IEventHandler::USER + 7)
+#define WAHWAH_EVENT_CMD_CONT_MODE_ENTERED		(IEventHandler::USER + 8)
 
 // These are Identifiers for the ToDiscrete instances so we can differentiate events from each
 #define ANGLE_ABOUT_VERTICAL_REF	(0)
@@ -40,10 +41,12 @@ enum SpecificOrientation {
 
 // These are used to help configure the ToDiscrete instances
 #define NUM_VERTICAL_SEGMENTS       (16)
-#define NUM_HORIZONTAL_SEGMENTS     (16)
+#define NUM_HORIZONTAL_SEGMENTS     (8)
 #define NUM_NECK_SEGMENTS           (4)
 
 #define NUM_MIDI_CMDS               (5)
+
+
 
 // This is used to collate helpful information following a new motion sensor reading
 
@@ -91,6 +94,76 @@ uint8_t verticalZoneMap[NUM_VERTICAL_SEGMENTS] = {
   ZONE_VERTICAL_DOWN,
 };
 
+
+class WahWahLight : AutoUpdate {
+public:
+	ColourRGB* light;
+
+	SigGen colourGen;
+	SigGen saturationGen;
+	SigGen brightnessGen;
+	
+	uint8_t colour;
+	uint8_t saturation;
+	uint8_t brightness;
+
+	uint8_t* saturationTracker;
+	uint8_t* brightnessTracker;
+
+	WahWahLight() {
+		colour = 0;
+		saturation = 0;
+		brightness = 0;
+
+		saturationTracker = NULL;
+	};
+
+	void setLight(uint8_t _colour, uint8_t _saturation, uint8_t _brightness) {
+		colourGen.stop();
+		saturationGen.stop();
+		brightnessGen.stop();
+
+		saturationTracker = NULL;
+		brightnessTracker = NULL;
+
+		colour = _colour;
+		saturation = _saturation;
+		brightness = _brightness;
+	}
+
+	void update(uint16_t elapsed_time) {
+		uint8_t h, s, v;
+		h = colourGen.isRunning() ? colourGen.readValue() : colour;
+
+		if (saturationGen.isRunning()) {
+			s = saturationGen.readValue();
+		}
+		else if (saturationTracker) {
+			s = 255 - *saturationTracker;
+		}
+		else {
+			s = saturation;
+		}
+
+		if (brightnessGen.isRunning()) {
+			v = brightnessGen.readValue();
+		}
+		else if (brightnessTracker) {
+			v = (255 - *brightnessTracker) >> 1;
+			v = v > 10 ? v : 10;
+		}
+		else {
+			v = brightness;
+		}
+
+		*light = ColourConverter::ConvertToRGB(h, s, v);
+	}
+};
+
+WahWahLight wahWahLights[myPie.num_lights];
+bool pedalOn[NUM_MIDI_CMDS];
+
+
 // Called once at startup
 void setup()
 {
@@ -111,6 +184,14 @@ void setup()
 	currentOrientation.rotationAboutNeck.start(0);
 	currentOrientation.verticalOrientation = ZONE_NON_SPECIFIC;
 	currentOrientation.neckRotationOrientation = ZONE_NON_SPECIFIC;
+
+	for (int i = 0; i < myPie.num_lights; i++) {
+		wahWahLights[i].light = myPie.ledStrip + i;
+	}
+
+	for (int i = 0; i > NUM_MIDI_CMDS; i++) {
+		pedalOn[i] = false;
+	}
 }
 
 // Called repeatedly after setup
@@ -149,9 +230,7 @@ void blueberryPieEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventIn
 		break;
 
 	case TimerTickMngt::TIMER_TICK_S:
-		Serial.print(currentOrientation.verticalOrientation);
-		Serial.print(" ");
-		printOrientation();
+		Serial.println(currentOrientation.angleAboutVertical.distance_to_mid_255);
 		break;
 
 	case TimerTickMngt::TIMER_TICK_100MS:
@@ -197,12 +276,22 @@ void handleMotionSensorReading(uint16_t eventId, uint8_t srcRef, uint16_t eventI
 		sin_orientation = x / sqrt(x * x + y * y);
 		currentOrientation.angleAboutVertical.writeValue(asin(sin_orientation) * 0x8000 / M_PI);
 
-		currentOrientation.verticalOrientation = (SpecificOrientation) verticalZoneMap[currentOrientation.angleToVertical.current_discrete_value];
-		currentOrientation.neckRotationOrientation = ZONE_NON_SPECIFIC;
-		if ((currentOrientation.rotationAboutNeck.current_discrete_value > 1) || (currentOrientation.rotationAboutNeck.current_discrete_value < -2))
-			currentOrientation.neckRotationOrientation = TILTED_ABOUT_NECK;
 
 		// printOrientation();
+	}
+
+	/*
+	 * We capture this event perculating through here to make sure the verticalOrientation is properly set
+	 */
+	if (eventId == ToDiscrete::NEW_VALUE){
+		if (srcRef == ANGLE_TO_VERTICAL_REF) {
+			currentOrientation.verticalOrientation = (SpecificOrientation)verticalZoneMap[currentOrientation.angleToVertical.current_discrete_value];
+		}
+		if (srcRef == ROTATION_ABOUT_NECK_REF) {
+			currentOrientation.neckRotationOrientation = ZONE_NON_SPECIFIC;
+			if ((currentOrientation.rotationAboutNeck.current_discrete_value > 1) || (currentOrientation.rotationAboutNeck.current_discrete_value < -2))
+				currentOrientation.neckRotationOrientation = TILTED_ABOUT_NECK;
+		}
 	}
 
 	generateWahWahEvents(eventId, srcRef, eventInfo, currentOrientation);
@@ -221,90 +310,247 @@ void generateWahWahEvents(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo, 
 		CMD_CONTINOUS_CONTROL_MODE
 	} state = OFF;
 	static boolean isTilted = false;
+	static uint8_t selectedCommand;
 
-	if(eventId == MotionSensor::MOTION_SENSOR_NEW_SMPL_RDY) {
-		/* Start by managing ON and OFF state */
-		if (!isTilted && orientation.neckRotationOrientation == TILTED_ABOUT_NECK) {
-			isTilted = true;
-			if (state == OFF) {
-				handleWahWahEvents(WAHWAH_EVENT_TURN_ON, 0, 0, orientation);
-				state = ON;
+	/*
+	 * The state machine only changes when one of the ToDiscrete's changes value
+	 */
+	if(eventId == ToDiscrete::NEW_VALUE) {
+
+		/* Start by managing ON and OFF state - this overrides other handling*/
+		if (srcRef == ROTATION_ABOUT_NECK_REF && orientation.verticalOrientation != ZONE_VERTICAL_UP) {
+			if (!isTilted && orientation.neckRotationOrientation == TILTED_ABOUT_NECK) {
+				isTilted = true;
+				if (state == OFF) {
+					handleWahWahEvents(WAHWAH_EVENT_TURN_ON, 0, 0, orientation);
+					state = ON;
+				}
+				else {
+					handleWahWahEvents(WAHWAH_EVENT_TURN_OFF, 0, 0, orientation);
+					state = OFF;
+				}
 			}
-			else {
-				handleWahWahEvents(WAHWAH_EVENT_TURN_OFF, 0, 0, orientation);
-				state = OFF;
+			else if (isTilted && orientation.neckRotationOrientation != TILTED_ABOUT_NECK) {
+				isTilted = false;
 			}
-		}
-		else if (isTilted && orientation.neckRotationOrientation != TILTED_ABOUT_NECK) {
-			isTilted = false;
 		}
 
 		/* Priniciple state machine */
-		switch(state) {
-          case ON:
-			if (orientation.verticalOrientation == ZONE_COMMAND_SELECTION) {
-				myPie.motionSensor.resetHorizontalOrientation();
-				currentOrientation.angleAboutVertical.start(0);
-				state = CMD_SELECTION_MODE;
-				handleWahWahEvents(WAHWAH_EVENT_ENTERED_CMD_SLCT_MODE, 0, 0, orientation);
-			}
+		switch (state) {
+    		case ON: {
+		    	if (orientation.verticalOrientation == ZONE_COMMAND_SELECTION) {
+					printOrientation();
+			    	currentOrientation.angleAboutVertical.stop();
+				    myPie.motionSensor.resetHorizontalOrientation();
+				    state = CMD_SELECTION_MODE;
+				    selectedCommand = 0;
+				    handleWahWahEvents(WAHWAH_EVENT_ENTERED_CMD_SLCT_MODE, 0, 0, orientation);
+			    }
+		    }
 			break;
 
 		  case CMD_SELECTION_MODE: {
-			  if (orientation.verticalOrientation == ZONE_COMMAND_SELECTION)
-				  /* nothing to do*/
-				  break;
 
-			  int16_t selectedCommand = -1 - orientation.angleAboutVertical.current_discrete_value;
-			  if ((selectedCommand < 0) || (selectedCommand >= NUM_MIDI_CMDS)) {
-				  handleWahWahEvents(WAHWAH_EVENT_LEFT_CMD_SLCT_MODE, 0, 0, orientation);
-				  state = ON;
-				  break;
+			  if (srcRef == ANGLE_ABOUT_VERTICAL_REF) {
+				  int16_t value = orientation.angleAboutVertical.current_discrete_value;
+				  if ((value <= 0) && (value > -NUM_MIDI_CMDS)) {
+					  selectedCommand = -value;
+					  handleWahWahEvents(WAHWAH_EVENT_CMD_SLCT_NEW, 0, selectedCommand, orientation);
+				  }
+				  else {
+					  selectedCommand = NUM_MIDI_CMDS; // invalid value;
+					  handleWahWahEvents(WAHWAH_EVENT_CMD_SLCT_NULL, 0, 0, orientation);
+				  }
 			  }
 
-			  if (orientation.verticalOrientation == ZONE_TOGGLE) {
-				  state = CMD_TOGGLE_MODE;
-				  handleWahWahEvents(WAHWAH_EVENT_CMD_TOGGLE_MODE_ENTERED, 0, selectedCommand, orientation);
+			  if ((srcRef == ANGLE_TO_VERTICAL_REF) && (orientation.verticalOrientation != ZONE_COMMAND_SELECTION)) {
+				  if (selectedCommand == NUM_MIDI_CMDS) {
+					  handleWahWahEvents(WAHWAH_EVENT_LEFT_CMD_SLCT_MODE, 0, selectedCommand, orientation);
+					  state = ON;
+					  break;
+				  }
+				  if (orientation.verticalOrientation == ZONE_CONTINUOUS_CONTROL) {
+					  handleWahWahEvents(WAHWAH_EVENT_CMD_CONT_MODE_ENTERED, 0, selectedCommand, orientation);
+					  state = CMD_CONTINOUS_CONTROL_MODE;
+					  break;
+				  }
+				  if (orientation.verticalOrientation == ZONE_TOGGLE) {
+					  handleWahWahEvents(WAHWAH_EVENT_CMD_TOGGLE, 0, selectedCommand, orientation);
+					  state = CMD_TOGGLE_MODE;
+					  break;
+				  }
+			  }
+		  }
+		  break;
+
+		  case CMD_TOGGLE_MODE: {
+
+			  if (srcRef == ANGLE_TO_VERTICAL_REF && orientation.verticalOrientation == ZONE_COMMAND_SELECTION) {
+				  handleWahWahEvents(WAHWAH_EVENT_CMD_SLCT_NEW, 0, selectedCommand, orientation);
+				  state = CMD_SELECTION_MODE;
 				  break;
 			  }
-			  if (orientation.verticalOrientation == ZONE_CONTINUOUS_CONTROL) {
-				  state = CMD_CONTINOUS_CONTROL_MODE;
-				  handleWahWahEvents(WAHWAH_EVENT_CMD_CONT_MODE_ENTERED, 0, 0, orientation);
+		  }
+		  break;
+
+		  case CMD_CONTINOUS_CONTROL_MODE: {
+			  if (srcRef == ANGLE_TO_VERTICAL_REF && orientation.verticalOrientation == ZONE_COMMAND_SELECTION) {
+				  handleWahWahEvents(WAHWAH_EVENT_ENTERED_CMD_SLCT_MODE, 0, 0, orientation);
+				  selectedCommand = 0;
+				  state = CMD_SELECTION_MODE;
 				  break;
 			  }
-			  state = ON;
-			  handleWahWahEvents(WAHWAH_EVENT_LEFT_CMD_SLCT_MODE, 0, 0, orientation);
 		  }
 		  break;
 		}
 	}
 
-	if (state == CMD_SELECTION_MODE && eventId == ToDiscrete::NEW_VALUE && srcRef == ANGLE_ABOUT_VERTICAL_REF) {
-		handleWahWahEvents(WAHWAH_EVENT_CMD_SLCT_NEW, 0, orientation.angleAboutVertical.current_discrete_value, orientation);
+	if (state == CMD_SELECTION_MODE && eventId == TimerTickMngt::TIMER_TICK_100MS && false) {
+		Serial.print(orientation.angleAboutVertical.distance_to_mid_scaler);
+		Serial.print(" ");
+		Serial.print(orientation.angleAboutVertical.in_step_value);
+		Serial.print(" ");
+		Serial.println(orientation.angleAboutVertical.calculateDistanceToMid());
 	}
 		
 	handleWahWahEvents(eventId, srcRef, eventInfo, orientation);
 }
 
-// This responds to events from the WahWah "Model" and updates the BlueberryPie
-// in response to WAHWAH events
-void handleWahWahEvents(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo, Orientation orientation){
-	if (eventId == WAHWAH_EVENT_TURN_ON)
-		Serial.println("ON!!");
-	if (eventId == WAHWAH_EVENT_TURN_OFF)
-		Serial.println("OFF!!");
-	if (eventId == WAHWAH_EVENT_ENTERED_CMD_SLCT_MODE)
-		Serial.println("ENTERED CMD SLCT MODE!!");
-	if (eventId == WAHWAH_EVENT_LEFT_CMD_SLCT_MODE)
-		Serial.println("LEFT CMD SLCT MODE!!");
-	if (eventId == WAHWAH_EVENT_CMD_SLCT_NEW) {
-		Serial.print("New Cmd: ");
-		Serial.print(orientation.angleAboutVertical.current_continuous_value);
-		Serial.print(": ");
-		Serial.println(orientation.angleAboutVertical.current_discrete_value);
+void setAllLights(uint8_t colour, uint8_t saturation, uint8_t brightness) {
+
+	for (int i = 0; i < myPie.num_lights; i++) {
+		wahWahLights[i].setLight(colour, saturation, brightness);
 	}
 }
 
+// This responds to events from the WahWah "Model" and updates the BlueberryPie
+// in response to WAHWAH events
+void handleWahWahEvents(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo, Orientation orientation) {
+	const uint8_t SAT_HIGH = 255;
+	const uint8_t SAT_LOW = 210;
+	const uint8_t BRIGHT_HIGH = 64;
+	const uint8_t BRIGHT_MED = 32;
+	const uint8_t BRIGHT_LOW = 16;
+
+	const uint8_t cmdColours[NUM_MIDI_CMDS] = { 0, 85, 170, 42, 230 };
+	const uint8_t midiNote[NUM_MIDI_CMDS] = { MIDI_A2, MIDI_B2, MIDI_C3, MIDI_D3, MIDI_E3 };
+
+	switch (eventId) {
+	case WAHWAH_EVENT_TURN_ON: {
+		Serial.println("ON!!");
+		static SigGen::SAMPLE colourWave[] = { 255, 200 };
+		setAllLights(200, SAT_HIGH, BRIGHT_LOW);
+		for (int i = 0; i < myPie.num_lights; i++) {
+			wahWahLights[i].brightnessGen.configSamples(sineWave255, NUM_SAM(sineWave255), 300, 0);
+			wahWahLights[i].brightnessGen.start(2, i * 50);
+
+			wahWahLights[i].colourGen.configSamples(colourWave, NUM_SAM(colourWave), 800, 0);
+			wahWahLights[i].colourGen.start(1);
+		}
+	}
+    break;
+
+	case WAHWAH_EVENT_TURN_OFF: {
+		Serial.println("OFF!!");
+		static SigGen::SAMPLE turnOffSig[] = { 0xff, 0 };
+		setAllLights(220, 0, 0x00);
+		for (int i = 0; i < myPie.num_lights; i++) {
+			wahWahLights[i].brightnessGen.configSamples(turnOffSig, NUM_SAM(turnOffSig), 300, 0);
+			wahWahLights[i].brightnessGen.start(1);
+		}
+	}
+    break;
+
+	case WAHWAH_EVENT_ENTERED_CMD_SLCT_MODE: {
+		Serial.println("ENTERED CMD SLCT MODE!!");
+		setAllLights(200, SAT_HIGH, BRIGHT_MED);
+		static SigGen::SAMPLE brightWav[] = { BRIGHT_LOW, 0xff, BRIGHT_MED };
+		for (int i = 0; i < myPie.num_lights; i++) {
+			wahWahLights[i].brightnessGen.configSamples(brightWav, NUM_SAM(brightWav), 300, 0);
+			wahWahLights[i].brightnessGen.start(1);
+		}
+	}
+    break;
+
+	case WAHWAH_EVENT_LEFT_CMD_SLCT_MODE: {
+		Serial.println("LEFT CMD SLCT MODE!!");
+		setAllLights(200, SAT_LOW, BRIGHT_MED);
+		static SigGen::SAMPLE brightWav[] = { BRIGHT_MED, 0xff, BRIGHT_LOW };
+		for (int i = 0; i < myPie.num_lights; i++) {
+			wahWahLights[i].brightnessGen.configSamples(brightWav, NUM_SAM(brightWav), 300, 0);
+			wahWahLights[i].brightnessGen.start(1);
+		}
+	}
+    break;
+
+	case WAHWAH_EVENT_CMD_SLCT_NEW: {
+		Serial.print("New Cmd: ");
+		Serial.println(eventInfo);
+		if (pedalOn[eventInfo]) {
+			setAllLights(cmdColours[eventInfo], SAT_HIGH, 0);
+		}
+		else {
+			setAllLights(cmdColours[eventInfo], SAT_LOW, 0);
+		}
+		for (int i = 0; i < myPie.num_lights; i++) {
+			wahWahLights[i].brightnessTracker = &currentOrientation.angleAboutVertical.distance_to_mid_255;
+		}
+
+	}
+    break;
+
+	case WAHWAH_EVENT_CMD_SLCT_NULL: {
+		Serial.println("New Null: ");
+		setAllLights(200, SAT_HIGH, BRIGHT_MED);
+	}
+    break;
+
+	case WAHWAH_EVENT_CMD_TOGGLE: {
+		if (pedalOn[eventInfo]) {
+			// Turn Off
+			Serial.print("ENTERED CMD TOGGLE OFF:");
+			Serial.println(eventInfo);
+			static SigGen::SAMPLE brightnessWave[] = { BRIGHT_HIGH, 0xff, BRIGHT_MED };
+			setAllLights(cmdColours[eventInfo], SAT_LOW, BRIGHT_MED);
+			for (int i = 0; i < myPie.num_lights; i++) {
+				wahWahLights[i].brightnessGen.configSamples(brightnessWave, NUM_SAM(brightnessWave), 300, 0);
+				wahWahLights[i].brightnessGen.start(1);
+			}
+			pedalOn[eventInfo] = false;
+			myPie.midiBle.noteOff(1, midiNote[eventInfo]);
+		} else {
+			// Turn On
+			Serial.print("ENTERED CMD TOGGLE ON:");
+			Serial.println(eventInfo);
+			static SigGen::SAMPLE brightnessWave[] = { BRIGHT_MED, 0xff, BRIGHT_HIGH };
+			setAllLights(cmdColours[eventInfo], SAT_HIGH, BRIGHT_HIGH);
+			for (int i = 0; i < myPie.num_lights; i++) {
+				wahWahLights[i].brightnessGen.configSamples(brightnessWave, NUM_SAM(brightnessWave), 300, 0);
+				wahWahLights[i].brightnessGen.start(1);
+			}
+			pedalOn[eventInfo] = true;
+			myPie.midiBle.noteOn(1, midiNote[eventInfo]);
+		}
+	}
+    break;
+
+	case WAHWAH_EVENT_CMD_CONT_MODE_ENTERED: {
+		Serial.println("ENTERED CMD CONTINUOUS MODE");
+		static SigGen::SAMPLE brightnessWave[] = { BRIGHT_MED, 0xff, BRIGHT_HIGH };
+		setAllLights(cmdColours[eventInfo], SAT_HIGH, BRIGHT_HIGH);
+		for (int i = 0; i < myPie.num_lights; i++) {
+			wahWahLights[i].brightnessGen.configSamples(brightnessWave, NUM_SAM(brightnessWave), 300, 0);
+			wahWahLights[i].brightnessGen.start(1);
+		}
+		pedalOn[eventInfo] = true;
+		myPie.midiBle.noteOn(1, midiNote[eventInfo]);
+	}
+    break;
+	}
+}
+
+
+// handleSerialInput
 void handleSerialInput()
 {
 	if (Serial.available())
@@ -330,7 +576,7 @@ void handleSerialInput()
 			Serial.println("Sending Midi Message");
 			myPie.midiBle.setMidiMsg(status, data1, data2);
 		}
-				break;
+		break;
 
 		case 'l': {
 			// Configures the motionSensor rotation offset to believe it is level
@@ -338,23 +584,22 @@ void handleSerialInput()
 			Serial.println("AutoLevel");
 			myPie.configOffsetRotation();
 		}
-				break;
+		break;
 
 		case 'z': {
 			// Removes any rotation offset from the motionSensor
 			Serial.println("Clear offset");
 			myPie.motionSensor.clearOffsetRotation();
 		}
-
-				break;
+		break;
 
 		case 'r': {
 			// Changes offset so facing 'null' horizontal direction
 			Serial.println("Reset Horizontal Orientation");
+			currentOrientation.angleAboutVertical.stop(); // this avoids a burst of events as the angle about Z suddenly changes
 			myPie.motionSensor.resetHorizontalOrientation();
 		}
-			break;
-
+		break;
 
 		}
 	}
@@ -374,3 +619,4 @@ void printOrientation() {
 	Serial.print(" R: ");
 	Serial.println(currentOrientation.rotationAboutNeck.current_discrete_value);
 }
+

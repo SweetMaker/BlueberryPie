@@ -81,6 +81,9 @@ int8_t  detectAccidental();
 struct NoteTuple selectMidiNoteFromScale(MusicalScale* scale, int16_t index);
 struct NoteTuple selectNextNote();
 
+void printOrientation();
+
+
 /*
  * Captures events from myPie and SweetMaker framework
  */
@@ -423,6 +426,7 @@ void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo)
 		break;
 
 	case TimerTickMngt::TIMER_TICK_S:
+		printOrientation();
 		break;
 
 	case ToDiscrete::NEW_VALUE: {
@@ -548,4 +552,10 @@ struct NoteTuple selectNextNote() {
 	for (uint8_t i = 0; i < NUM_LIGHTS; i++)
 		lightStripHSV[i].hue = hue[note.indexInScale];
 	return (note);
+}
+
+void printOrientation() {
+	Serial.print("Y: "); Serial.print(rotationAboutVerticalQuantizer.current_discrete_value);
+	Serial.print(" P: "); Serial.print(verticalTiltQuantizer.current_discrete_value);
+	Serial.print(" R: "); Serial.println(zAxisRotationQuantizer.current_discrete_value);
 }
