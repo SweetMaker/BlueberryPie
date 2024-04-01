@@ -26,6 +26,9 @@ Release     Date                        Change Description
 --------|-------------|--------------------------------------------------------|
    1      18-Jan-2024   Initial release
    2      22-Jan-2024   Renamed - various playability improvements
+   3      01-Apr-2024   - Changed Scale to C Major
+                        - Changed Note Selection colour to max brightness mid note.
+						- Added horizontal re-orientation
 *******************************************************************************/
 
 #include "BlueberryPie.h"
@@ -55,12 +58,40 @@ uint8_t static const hue[] = { 0,160,120,200,40,230,80 };
 
 BlueberryPie myPie;
 
+/*
+ * Orientation Data
+ */
+typedef enum {
+	SELECT_SHARP = 0,
+	SELECT_NATURAL = 1,
+	SELECT_FLAT = 2,
+	REORIENTATE = 3
+}NOTE_MODIFICATION;
+
+typedef enum {
+	MUTE = 0,
+	DAMPING = 1,
+	NOTE_SELECTION = 2,
+	COLOUR_LOCKIN = 3,
+	PRE_STRIKE = 4,
+	POST_STRIKE = 5,
+}MALLET_STATE;
+
+
 ToDiscrete zAxisRotationQuantizer(2048, 200, Z_AXIS_QUANTIZER_REF); // Used for accidental selection
 ToDiscrete verticalTiltQuantizer(2048, 200, VERT_TILT_QUANTIZER_REF);  // Used for controlling playing notes
 ToDiscrete rotationAboutVerticalQuantizer(8192, 200, HORIZ_DIR_QUANTIZER_REF);  // Used for selecting notes
+
+int16_t zAxisRotation_16384;
 int16_t zAxisAboutVertical_16384;
 int16_t verticalVelocity;
 
+uint8_t noteModification = SELECT_NATURAL;
+uint8_t playZone = MUTE;
+
+/*
+ * Signal Generation
+ */
 static const SigGen::SAMPLE PROGMEM flashLowWave[] = { 127, 0, 0, 0, 0, 127 };
 static const SigGen::SAMPLE PROGMEM flashHighWave[] = { 127, 200, 200, 200, 200, 127 };
 
@@ -77,7 +108,6 @@ boolean performPitchBend(int16_t input, uint8_t channel);
 boolean performAfterTouch(int16_t input, uint8_t channel, uint8_t note);
 boolean performModulation(int16_t input, uint8_t channel);
 
-int8_t  detectAccidental();
 struct NoteTuple selectMidiNoteFromScale(MusicalScale* scale, int16_t index);
 struct NoteTuple selectNextNote();
 
@@ -120,14 +150,20 @@ void setup()
 void loop()
 {
 	// Update each light from HSV value to RGB - Brightness is set depending on mySigGen
-	uint8_t value = brightnessSigGen.isRunning() ? (uint8_t)brightnessSigGen.readValue() : 127; // Used for Lights HSV value (brightness)
+
+	if (brightnessSigGen.isRunning()) {
+		for (uint8_t i = 0; i < NUM_LIGHTS; i++) {
+			lightStripHSV[i].value = (uint8_t)brightnessSigGen.readValue();
+		}
+	}
+
 	uint8_t scaledSaturation = saturation;
 	if (saturationSigGen.isRunning())
 		scaledSaturation = ((uint8_t)saturationSigGen.readValue() * saturation) >> 8;
 	
 	for (uint8_t i = 0; i < NUM_LIGHTS; i++) {
 		ColourHSV& hsv = lightStripHSV[i];
-		myPie.ledStrip[i] = ColourConverter::ConvertToRGB(hsv.hue, scaledSaturation, value);
+		myPie.ledStrip[i] = ColourConverter::ConvertToRGB(hsv.hue, scaledSaturation, hsv.value);
 	}
 
 	// This function drives updates for LEDs and everything in the Sweetmaker framework 
@@ -151,7 +187,12 @@ void handleMotionSensorNewSmplRdy(uint16_t eventId, uint8_t srcRef, uint16_t eve
 	double x = myPie.motionSensor.gravity.x;
 	double y = myPie.motionSensor.gravity.y;
 	double sin_orientation = x / sqrt(x * x + y * y); 
-	int16_t zAxisRotation_16384 = (int16_t)(asin(sin_orientation) * 0x8000 / M_PI);
+	zAxisRotation_16384 = (int16_t)(asin(sin_orientation) * 0x8000 / M_PI);
+
+	// Adjust value for quadrants outside of +/- 90
+	if (y < 0 && x>0) zAxisRotation_16384 = 32768 - zAxisRotation_16384;
+	else if (y < 0 && x < 0) zAxisRotation_16384 = -32768 - zAxisRotation_16384;
+
 	zAxisRotationQuantizer.writeValue((int32_t)zAxisRotation_16384);
 
 	// Calculate angle from vertical - used for playing notes
@@ -180,6 +221,26 @@ void handleMotionSensorNewSmplRdy(uint16_t eventId, uint8_t srcRef, uint16_t eve
 	previousAngleToVertical = angleToVertical_16384;
 
 	/*
+	* Change abstract orientation into something meaningful to miniMallet 
+	*/
+
+	playZone = convertTiltToZone(verticalTiltQuantizer.current_discrete_value);
+
+	int8_t zRot = zAxisRotationQuantizer.current_discrete_value;
+	if (abs(zRot) > 12) {
+		noteModification = REORIENTATE;
+	}
+	else if (zRot > 2) {
+		noteModification = SELECT_SHARP;
+	}
+	else if (zRot < -2) {
+		noteModification = SELECT_FLAT;
+	}
+	else {
+		noteModification = SELECT_NATURAL;
+	}
+
+	/*
 	* And now lets respond to what is happening in a stateful manor
 	*/
 	MALLET_handle_event_orientation_update();
@@ -188,28 +249,20 @@ void handleMotionSensorNewSmplRdy(uint16_t eventId, uint8_t srcRef, uint16_t eve
 /*
  * Select Midi Note from scale - this handles shifting octaves if the index is large
  */
-// const uint8_t c_major_notes[] = { MIDI_C4,MIDI_D4,MIDI_E4,MIDI_F4,MIDI_G4,MIDI_A4,MIDI_B4 };
-// MusicalScale c_major_scale = { c_major_notes, 7 };
+const uint8_t c_major_notes[] = { MIDI_C4, MIDI_D4, MIDI_E4, MIDI_F4, MIDI_G4, MIDI_A4, MIDI_B4 };
+MusicalScale c_major_scale = { c_major_notes, 7 };
 
 //const uint8_t e_major_notes[] = { MIDI_CS3, MIDI_DS3, MIDI_E3,MIDI_FS3,MIDI_GS3, MIDI_A3,MIDI_B3 };
 //MusicalScale e_major_scale = { e_major_notes, 7 };
 
-const uint8_t g_major_notes[] = {MIDI_A3,MIDI_B3,MIDI_C4,MIDI_D4, MIDI_E4,MIDI_FS4,MIDI_G4 };
-MusicalScale g_major_scale = { g_major_notes, 7 };
+//const uint8_t g_major_notes[] = {MIDI_A3,MIDI_B3,MIDI_C4,MIDI_D4, MIDI_E4,MIDI_FS4,MIDI_G4 };
+//MusicalScale g_major_scale = { g_major_notes, 7 };
 
-MusicalScale* my_scale = &g_major_scale;
+MusicalScale* my_scale = &c_major_scale;
 
 /*
  * malletStateMachine - Controls behaviour of MidiBaton
  */
-typedef enum {
-	MUTE = 0,
-	DAMPING = 1,
-	NOTE_SELECTION = 2,
-	COLOUR_LOCKIN = 3,
-	PRE_STRIKE = 4,
-	POST_STRIKE = 5,
-}MALLET_STATE;
 
 typedef enum {
 	ORIENTATION_UPDATE = 1,
@@ -257,12 +310,9 @@ void MALLET_handle_event_orientation_update() {
 	static int16_t pitchBendNullPosition = 0;
 	static boolean dampPedalOn = true;
 
-	int16_t tilt = verticalTiltQuantizer.current_discrete_value;
-	uint8_t zone = convertTiltToZone(tilt);
-
 	switch (mallet_state) {
 	case NOTE_SELECTION: {
-		if ((zone == STRIKE_ZONE) || (zone == AFTER_ZONE)){
+		if ((playZone == STRIKE_ZONE) || (playZone == AFTER_ZONE)){
 			Serial.print("Has started strike: ");
 			Serial.println(nextNote.midiNote);
 			mallet_state = PRE_STRIKE;
@@ -272,7 +322,7 @@ void MALLET_handle_event_orientation_update() {
 			saturation = 0;
 			break;
 		}
-		if ((zone == DAMP_ZONE) || (zone == MUTE_ZONE)) {
+		if ((playZone == DAMP_ZONE) || (playZone == MUTE_ZONE)) {
 			Serial.println("Has started damping");
 			mallet_state = DAMPING;
 			break;
@@ -313,7 +363,7 @@ void MALLET_handle_event_orientation_update() {
 				    
 	case POST_STRIKE: {
 		nextNote = selectNextNote();
-		if (zone == NOTE_SELECTION_ZONE) {
+		if (playZone == NOTE_SELECTION_ZONE) {
 			Serial.println("Has started note selection");
 			myPie.midiBle.noteOff(MIDI_CHAN_NUM, currentNote);
 			saturation = 255;
@@ -322,7 +372,7 @@ void MALLET_handle_event_orientation_update() {
 			myPie.midiBle.modulate(MIDI_CHAN_NUM, 0);
 			break;
 		}
-		if (zone == AFTER_ZONE) {
+		if (playZone == AFTER_ZONE) {
 			// Bend note
 			// performPitchBend(zAxisAboutVertical_16384 - pitchBendNullPosition, MIDI_CHAN_NUM);
 			// performAfterTouch(zAxisAboutVertical_16384 - pitchBendNullPosition, MIDI_CHAN_NUM, currentNote);
@@ -333,12 +383,12 @@ void MALLET_handle_event_orientation_update() {
     break;
 
 	case DAMPING: {
-		if (zone == DAMP_ZONE) {
+		if (playZone == DAMP_ZONE) {
 			uint8_t footControlValue = (uint8_t)(((uint16_t)verticalTiltQuantizer.in_step_value) >> 5);
 			myPie.midiBle.setMidiMsg(0b10110000, 4, footControlValue);
 			nextNote = selectNextNote();
 		}
-		else if (zone == MUTE_ZONE) {
+		else if (playZone == MUTE_ZONE) {
 			if (dampPedalOn) {
 				Serial.println("Sustain pedal off");
 				dampPedalOn = false;
@@ -362,7 +412,7 @@ void MALLET_handle_event_orientation_update() {
     break;
 
 	case MUTE: {
-		if (zone != MUTE) {
+		if (playZone != MUTE) {
 			Serial.println("Has stopped muting");
 			mallet_state = DAMPING;
 		}
@@ -512,16 +562,6 @@ boolean performModulation(int16_t input, uint8_t channel) {
 	return true;
 }
 
-
-int8_t  detectAccidental() {
-	if (zAxisRotationQuantizer.current_discrete_value >= 2)
-		return -1;
-	else if (zAxisRotationQuantizer.current_discrete_value <= -2)
-		return +1;
-	return 0;
-}
-
-
 /*
  * selectMidiNoteFromScale
  */
@@ -544,8 +584,16 @@ struct NoteTuple selectNextNote() {
 	NoteTuple note;
 	int16_t orientation = rotationAboutVerticalQuantizer.current_discrete_value;
 	note = selectMidiNoteFromScale(my_scale, orientation);
-	note.midiNote += detectAccidental();
-	for (uint8_t i = 0; i < NUM_LIGHTS; i++)
-		lightStripHSV[i].hue = hue[note.indexInScale];
+	if (noteModification == SELECT_SHARP)
+		note.midiNote++;
+	else if (noteModification == SELECT_FLAT)
+		note.midiNote--;
+	uint8_t _hue = hue[note.indexInScale];
+
+	uint8_t _brightness = 255 - rotationAboutVerticalQuantizer.calculateDistanceToMid();
+	for (uint8_t i = 0; i < NUM_LIGHTS; i++) {
+		lightStripHSV[i].hue = _hue;
+		lightStripHSV[i].value = _brightness;
+	}
 	return (note);
 }
