@@ -38,7 +38,7 @@ Release     Date                        Change Description
 
 using namespace SweetMaker;
 
-#define NUM_LIGHTS (StrawberryString::num_lights)
+#define NUM_LIGHTS (5)
 
 #define Z_AXIS_QUANTIZER_REF	(0)
 #define VERT_TILT_QUANTIZER_REF (1)
@@ -75,6 +75,7 @@ typedef enum {
 	COLOUR_LOCKIN = 3,
 	PRE_STRIKE = 4,
 	POST_STRIKE = 5,
+	MS_REORIENTATE = 6
 }MALLET_STATE;
 
 
@@ -96,7 +97,7 @@ static const SigGen::SAMPLE PROGMEM flashLowWave[] = { 127, 0, 0, 0, 0, 127 };
 static const SigGen::SAMPLE PROGMEM flashHighWave[] = { 127, 200, 200, 200, 200, 127 };
 
 SigGen brightnessSigGen;
-SigGen saturationSigGen(flashLowWave, NUM_SAM(flashLowWave), 200, SigGen::DONT_FINISH_ON_ZERO);
+SigGen saturationSigGen(flashLowWave, sizeof(flashLowWave)>>1, 200, SigGen::DONT_FINISH_ON_ZERO);
 StaticGen myStaticGen;
 
 int8_t saturation = 255;
@@ -116,6 +117,9 @@ struct NoteTuple selectNextNote();
  */
 void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo);
 
+bool contPrintGravity = false;
+bool contPrintOrientation = false;
+
 /*
  * Runs once when the system starts up.
  */
@@ -124,6 +128,10 @@ void setup()
 	int retVal;
 	Serial.begin(112500); // set the baud rate to 112500 on PC
 	Serial.println("Welcome to MusicMallet");
+
+	Serial.print("Stored CRC Value: ");
+	Serial.println(EepromUtility::EepromReader::readU16(EepromUtility::maxEepromLen - 2));
+
 
 	myPie.configEventHandlerCallback(myEventHandler);
 
@@ -184,8 +192,8 @@ void handleMotionSensorNewSmplRdy(uint16_t eventId, uint8_t srcRef, uint16_t eve
 	 * Start by manipulating orientation data into meaningful representation 
 	 */
 	// Calculate rotation about vertical (horizontal plane) - used for modifying note selection
-	double x = myPie.motionSensor.gravity.x;
-	double y = myPie.motionSensor.gravity.y;
+	double x = myPie.motionSensor.motionProcessor.processedReadings.gravity_m.x;
+	double y = myPie.motionSensor.motionProcessor.processedReadings.gravity_m.y;
 	double sin_orientation = x / sqrt(x * x + y * y); 
 	zAxisRotation_16384 = (int16_t)(asin(sin_orientation) * 0x8000 / M_PI);
 
@@ -197,13 +205,13 @@ void handleMotionSensorNewSmplRdy(uint16_t eventId, uint8_t srcRef, uint16_t eve
 
 	// Calculate angle from vertical - used for playing notes
 	Quaternion_16384 vertical = Quaternion_16384(0, 0, 0, 16384);
-	double cos_angleToVertical= (double)myPie.motionSensor.gravity.dotProduct(&vertical) / 16384;
+	double cos_angleToVertical= (double)myPie.motionSensor.motionProcessor.processedReadings.gravity_m.dotProduct(&vertical) / 16384;
 	int16_t angleToVertical_16384 = (int16_t)(acos(cos_angleToVertical) * 0x8000 / M_PI);
 	verticalTiltQuantizer.writeValue((int32_t)angleToVertical_16384);
 
 	// Calculate rotation of z axis about vertical - used for note selection and modulation 
 	Quaternion_16384 zAxis = Quaternion_16384(0, 0, 0, 16384);
-	myPie.motionSensor.rotQuat.rotate(&zAxis);
+	zAxis = myPie.motionSensor.motionProcessor.processedReadings.rotQuat_rm.rotate(&zAxis);
 	x = zAxis.x;
 	y = zAxis.y;
 	sin_orientation = x / sqrt(x * x + y * y);
@@ -313,14 +321,22 @@ void MALLET_handle_event_orientation_update() {
 	switch (mallet_state) {
 	case NOTE_SELECTION: {
 		if ((playZone == STRIKE_ZONE) || (playZone == AFTER_ZONE)){
-			Serial.print("Has started strike: ");
-			Serial.println(nextNote.midiNote);
-			mallet_state = PRE_STRIKE;
-			brightnessSigGen.configSamples(flashHighWave, NUM_SAM(flashHighWave), 200, SigGen::DONT_FINISH_ON_ZERO);
-			brightnessSigGen.start(1);
-			maxVerticalVelocity = 0;
-			saturation = 0;
-			break;
+			if (noteModification != REORIENTATE) {
+				Serial.print("Has started strike: ");
+				Serial.println(nextNote.midiNote);
+				mallet_state = PRE_STRIKE;
+				brightnessSigGen.configSamples(flashHighWave, sizeof(flashHighWave)>>1, 200, SigGen::DONT_FINISH_ON_ZERO);
+				brightnessSigGen.start(1);
+				maxVerticalVelocity = 0;
+				saturation = 0;
+				break;
+			}
+			else {
+				Serial.println("Reorientating");
+				myPie.motionSensor.motionProcessor.clearYawOffset();
+				mallet_state = MS_REORIENTATE;
+				break;
+			}
 		}
 		if ((playZone == DAMP_ZONE) || (playZone == MUTE_ZONE)) {
 			Serial.println("Has started damping");
@@ -351,7 +367,7 @@ void MALLET_handle_event_orientation_update() {
 			myPie.midiBle.noteOn(MIDI_CHAN_NUM, nextNote.midiNote, velocity);
 			currentNote = nextNote.midiNote;
 
-			brightnessSigGen.configSamples(flashLowWave, NUM_SAM(flashLowWave), 200, SigGen::DONT_FINISH_ON_ZERO);
+			brightnessSigGen.configSamples(flashLowWave, sizeof(flashLowWave)>>1, 200, SigGen::DONT_FINISH_ON_ZERO);
 			brightnessSigGen.start(1);
 
 			pitchBendNullPosition = zAxisAboutVertical_16384;
@@ -418,6 +434,14 @@ void MALLET_handle_event_orientation_update() {
 		}
 	}
     break;
+
+	case MS_REORIENTATE: {
+		if (playZone == NOTE_SELECTION_ZONE) {
+			Serial.println("Has finished reorientation");
+			mallet_state = NOTE_SELECTION;
+			break;
+		}
+	}
 	}
 }
 
@@ -473,6 +497,16 @@ void myEventHandler(uint16_t eventId, uint8_t srcRef, uint16_t eventInfo)
 		break;
 
 	case TimerTickMngt::TIMER_TICK_S:
+		if (contPrintGravity) {
+			Serial.print(myPie.motionSensor.motionProcessor.processedReadings.gravity_m.x); Serial.print(" ");
+			Serial.println(myPie.motionSensor.motionProcessor.processedReadings.gravity_m.y);
+		}
+
+		if (contPrintOrientation) {
+			Serial.print("RotationAboutModelZ: "); Serial.println(zAxisRotationQuantizer.current_discrete_value);
+			Serial.print("verticalTiltQuantizer: "); Serial.println(verticalTiltQuantizer.current_discrete_value);
+			Serial.print("rotationAboutVerticalQuantizer: "); Serial.println(rotationAboutVerticalQuantizer.current_discrete_value);
+		}
 		break;
 
 	case ToDiscrete::NEW_VALUE: {
@@ -499,6 +533,12 @@ void handleSerialInput() {
 
 		switch (c) {
 
+		case 'a': {
+			Serial.print("Stored CRC Value: ");
+			Serial.println(EepromUtility::EepromReader::readU16(EepromUtility::maxEepromLen - 2));
+		}
+		break;
+
 		case 'c': {
 			// Calibrates the motionSensor and stores result in EEPROM
 			Serial.println("MotionSensor must be level and stationary");
@@ -508,18 +548,26 @@ void handleSerialInput() {
 		}
 				break;
 
+		case 'g':
+			contPrintGravity = !contPrintGravity;
+			break;
+
 		case 'l': {
 			// Configures the motionSensor rotation offset to believe it is level
 			// Stores the configuration in EEPROM
 			Serial.println("AutoLevel");
-			myPie.configOffsetRotation();
+			myPie.autoLevelAndStore();
 		}
 				break;
+
+		case 'o':
+			contPrintOrientation = !contPrintOrientation;
+			break;
 
 		case 'z': {
 			// Removes any rotation offset from the motionSensor
 			Serial.println("Clear offset");
-			myPie.motionSensor.clearOffsetRotation();
+			myPie.motionSensor.motionProcessor.clearLevelOffset();
 		}
 				break;
 		}
